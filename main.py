@@ -13,9 +13,10 @@ from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import ScreenManager, Screen, NoTransition
 from kivy.utils import platform
+import native
 
 TURLER = ["PLA", "PLA+", "PETG", "ABS", "ASA", "TPU", "PA", "PPA-CF", "Diğer"]
-UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 try:
     import certifi
     CTX = ssl.create_default_context(cafile=certifi.where())
@@ -171,6 +172,16 @@ KV = """
                     text: 'Galeriden seç'
                     on_release: root.pick('e')
             Lbl:
+                text: 'Etiketten okunan metin'
+            Inp:
+                id: ocr
+                multiline: True
+                height: dp(100)
+                hint_text: 'Etiket fotoğrafı eklenince otomatik dolar'
+            Btn:
+                text: 'Etiketi tekrar oku'
+                on_release: root.reocr()
+            Lbl:
                 text: 'Örnek görsel (internet)'
             Image:
                 id: im2
@@ -228,10 +239,11 @@ def sql(s, a=()):
         c.close()
 
 
-def msg(t):
-    p = Popup(title="", separator_height=0, content=Label(text=t), size_hint=(.85, .25))
+def msg(t, secs=4):
+    lb = Label(text=t, halign="center", text_size=(Window.width * .75, None))
+    p = Popup(title="", separator_height=0, content=lb, size_hint=(.88, .35))
     p.open()
-    Clock.schedule_once(lambda *_: p.dismiss(), 2.5)
+    Clock.schedule_once(lambda *_: p.dismiss(), secs)
 
 
 def shrink(src, dst, m=900):
@@ -242,11 +254,24 @@ def shrink(src, dst, m=900):
 
 
 def search_images(qy, n=8):
-    """Bing görsel sayfasından sonuç adreslerini çeker (sunucu gerekmez)."""
-    url = "https://www.bing.com/images/search?q=" + urllib.parse.quote(qy)
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    page = urllib.request.urlopen(req, timeout=15, context=CTX).read().decode("utf-8", "ignore")
-    return [H.unescape(u) for u in re.findall(r"murl&quot;:&quot;(.*?)&quot;", page)][:n]
+    """Bing görsel sonuçlarından adres çeker (iki farklı uç nokta dener)."""
+    enc = urllib.parse.quote(qy)
+    urls_try = ["https://www.bing.com/images/async?q=%s&first=1&count=30&mmasync=1&setlang=en" % enc,
+                "https://www.bing.com/images/search?q=%s&setlang=en" % enc]
+    last = "sonuç yok"
+    for url in urls_try:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.8"})
+            page = urllib.request.urlopen(req, timeout=15, context=CTX).read().decode("utf-8", "ignore")
+        except Exception as ex:
+            last = "%s: %s" % (type(ex).__name__, ex)
+            continue
+        found = re.findall(r"murl&quot;:&quot;(.*?)&quot;", page) + re.findall(r'"murl":"(.*?)"', page)
+        found = [H.unescape(u).replace("\\/", "/") for u in found if u.startswith("http")]
+        if found:
+            return list(dict.fromkeys(found))[:n]
+        last = "Bing sayfası görsel içermedi (%d bayt)" % len(page)
+    raise RuntimeError(last)
 
 
 def download(url, dst):
@@ -332,6 +357,7 @@ class EditScreen(Screen):
             i[w].text = (r[k] or "") if r else ("1.75mm / 1kg" if k == "boyut" else "")
         self.e = r["etiket"] or "" if r else ""
         self.o = r["ornek"] or "" if r else ""
+        i.ocr.text = (r["ocr"] or "") if r else ""
         i.dl.disabled = not r
         self.cands, self.ci = [], 0
         self.show()
@@ -344,11 +370,11 @@ class EditScreen(Screen):
         i = self.ids
         if not i.mk.text.strip() or not i.rk.text.strip():
             return msg("En az Marka ve Renk gerekli.")
-        v = [i.mk.text.strip(), i.tr.text, i.rk.text.strip(), i.by.text, i.nz.text, i.tb.text, self.e, self.o, i.nt.text]
+        v = [i.mk.text.strip(), i.tr.text, i.rk.text.strip(), i.by.text, i.nz.text, i.tb.text, self.e, self.o, i.nt.text, i.ocr.text]
         if self.rid:
-            sql("UPDATE f SET marka=?,tur=?,renk=?,boyut=?,nozul=?,tabla=?,etiket=?,ornek=?,notlar=? WHERE id=?", v + [self.rid])
+            sql("UPDATE f SET marka=?,tur=?,renk=?,boyut=?,nozul=?,tabla=?,etiket=?,ornek=?,notlar=?,ocr=? WHERE id=?", v + [self.rid])
         else:
-            sql("INSERT INTO f (marka,tur,renk,boyut,nozul,tabla,etiket,ornek,notlar) VALUES (?,?,?,?,?,?,?,?,?)", v)
+            sql("INSERT INTO f (marka,tur,renk,boyut,nozul,tabla,etiket,ornek,notlar,ocr) VALUES (?,?,?,?,?,?,?,?,?,?)", v)
         self.manager.current = "list"
 
     def delete(self):
@@ -358,32 +384,56 @@ class EditScreen(Screen):
 
     # --- fotoğraf ---
     def take_photo(self):
-        dst = os.path.join(IMG, "cam_" + uuid.uuid4().hex + ".jpg")
-        try:
-            from plyer import camera
-            camera.take_picture(filename=dst, on_complete=lambda p: self._got("e", p))
-        except Exception as ex:
-            msg("Kamera açılamadı (%s). Galeriden seç." % ex)
+        self._start("cam", "e")
 
     def pick(self, which):
+        self._start("pick", which)
+
+    def _start(self, kind, which):
+        if platform != "android":
+            return msg("Bu özellik sadece telefonda çalışır.")
         try:
-            from plyer import filechooser
-            filechooser.open_file(on_selection=lambda s: s and self._got(which, s[0]),
-                                  filters=[["Resim", "*.jpg", "*.jpeg", "*.png", "*.webp"]])
+            cbs = dict(photo=lambda p: self._photo(which, p), text=self._text, error=self._err)
+            f = native.start_camera if kind == "cam" else native.start_pick
+            f(IMG, cbs, ocr=(which == "e"))
         except Exception as ex:
-            msg("Galeri açılamadı: %s" % ex)
+            msg("%s açılamadı: %s: %s" % ("Kamera" if kind == "cam" else "Galeri", type(ex).__name__, ex), 8)
 
     @mainthread
-    def _got(self, which, path):
-        if not path or not os.path.exists(path):
-            return
-        dst = os.path.join(IMG, which + uuid.uuid4().hex + ".jpg")
-        try:
-            shrink(path, dst)
-        except Exception as ex:
-            return msg("Görsel okunamadı: %s" % ex)
-        setattr(self, which, dst)
+    def _photo(self, which, path):
+        setattr(self, which, path)
         self.show()
+        if which == "e":
+            msg("Fotoğraf alındı, etiket okunuyor...", 2)
+
+    @mainthread
+    def _text(self, txt):
+        self.ids.ocr.text = txt or ""
+        d = native.parse_label(txt)
+        i = self.ids
+        got = []
+        for k, w in (("marka", "mk"), ("renk", "rk"), ("nozul", "nz"), ("tabla", "tb")):
+            if d.get(k) and not i[w].text.strip():
+                i[w].text = d[k]
+                got.append(d[k])
+        if d.get("boyut") and i.by.text.strip() in ("", "1.75mm / 1kg"):
+            i.by.text = d["boyut"]
+            got.append(d["boyut"])
+        if d.get("tur"):
+            i.tr.text = d["tur"]
+            got.append(d["tur"])
+        msg("Okunan: " + ", ".join(got) if got else
+            "Metin okundu ama alanlar ayrıştırılamadı. 'Etiketten okunan metin'e bak, elle doldur.", 5)
+
+    def reocr(self):
+        if not self.e:
+            return msg("Önce etiket fotoğrafı ekle.")
+        if platform != "android":
+            return msg("Bu özellik sadece telefonda çalışır.")
+        try:
+            native.recognize_file(self.e, self._text, self._err)
+        except Exception as ex:
+            msg("OCR hatası: %s: %s" % (type(ex).__name__, ex), 8)
 
     # --- internetten örnek görsel ---
     def find_sample(self):
@@ -435,7 +485,7 @@ class EditScreen(Screen):
 
     @mainthread
     def _err(self, t):
-        msg(t)
+        msg(t, 8)
 
 
 class FilamentApp(App):
@@ -446,7 +496,9 @@ class FilamentApp(App):
         os.makedirs(IMG, exist_ok=True)
         DB = os.path.join(d, "filamentler.db")
         sql("""CREATE TABLE IF NOT EXISTS f (id INTEGER PRIMARY KEY AUTOINCREMENT, marka TEXT, tur TEXT,
-               renk TEXT, boyut TEXT, nozul TEXT, tabla TEXT, etiket TEXT, ornek TEXT, notlar TEXT)""")
+               renk TEXT, boyut TEXT, nozul TEXT, tabla TEXT, etiket TEXT, ornek TEXT, notlar TEXT, ocr TEXT)""")
+        if "ocr" not in [r["name"] for r in sql("PRAGMA table_info(f)")]:
+            sql("ALTER TABLE f ADD COLUMN ocr TEXT")
         Window.clearcolor = (.07, .08, .1, 1)
         Builder.load_string(KV)
         sm = ScreenManager(transition=NoTransition())
@@ -455,11 +507,11 @@ class FilamentApp(App):
         Window.bind(on_keyboard=self.key)
         if platform == "android":
             try:
+                native.init()
                 from android.permissions import request_permissions
-                request_permissions(["android.permission.CAMERA", "android.permission.READ_EXTERNAL_STORAGE",
-                                     "android.permission.WRITE_EXTERNAL_STORAGE", "android.permission.READ_MEDIA_IMAGES"])
-            except Exception:
-                pass
+                request_permissions(["android.permission.WRITE_EXTERNAL_STORAGE"])
+            except Exception as ex:
+                Clock.schedule_once(lambda *_: msg("Başlatma hatası: %s" % ex, 8), 1)
         return sm
 
     def key(self, w, k, *a):
