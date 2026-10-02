@@ -4,7 +4,7 @@ package.name = filamentenvanteri
 package.domain = io.github.burstfire47
 source.dir = .
 source.include_exts = py,png,jpg,kv
-version = 1.0.0
+version = 1.2.0
 requirements = hostpython3==3.11.5,python3==3.11.5,kivy==2.3.0,sqlite3,pillow,certifi,pyjnius,android,openssl
 orientation = portrait
 fullscreen = 0

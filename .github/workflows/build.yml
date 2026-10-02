@@ -2,7 +2,11 @@ name: APK derle / Build APK
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -36,6 +40,13 @@ jobs:
             .buildozer
           key: buildozer-${{ hashFiles('buildozer.spec') }}
 
+      # Her derlemede aynı imza kullanılsın ki APK eskisinin üstüne güncellenebilsin
+      # Use the same signing key every build so the APK can update over the old one
+      - name: Sabit imza / Fixed signing key
+        run: |
+          mkdir -p ~/.android
+          cp signing/debug.keystore ~/.android/debug.keystore
+
       - name: APK derle / Build APK
         run: buildozer -v android debug
 
@@ -43,3 +54,10 @@ jobs:
         with:
           name: filament-envanteri-apk
           path: bin/*.apk
+
+      - name: GitHub Release (v* etiketi / v* tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/*.apk
+          generate_release_notes: true

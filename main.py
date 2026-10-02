@@ -1,6 +1,6 @@
 """Filament Envanteri - Kivy + SQLite (Android APK).
 Koyu tema / dark theme by default."""
-import os, re, ssl, uuid, sqlite3, threading, html as H
+import os, re, ssl, uuid, json, time, zipfile, sqlite3, threading, html as H
 import urllib.parse, urllib.request
 from kivy.app import App
 from kivy.clock import Clock, mainthread
@@ -15,6 +15,7 @@ from kivy.uix.screenmanager import ScreenManager, Screen, NoTransition
 from kivy.utils import platform
 import native
 
+COLS = ["marka", "tur", "renk", "boyut", "nozul", "tabla", "etiket", "ornek", "notlar", "ocr", "model"]
 TURLER = ["PLA", "PLA+", "PETG", "ABS", "ASA", "TPU", "PA", "PPA-CF", "Diğer"]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 try:
@@ -106,6 +107,16 @@ KV = """
         Btn:
             text: 'Listeyi gönder (CSV)'
             on_release: root.share()
+        BoxLayout:
+            size_hint_y: None
+            height: dp(46)
+            spacing: dp(6)
+            Btn:
+                text: 'Tam yedek al'
+                on_release: root.backup()
+            Btn:
+                text: 'Yedekten yükle'
+                on_release: root.restore_pick()
         ScrollView:
             GridLayout:
                 id: box
@@ -140,6 +151,11 @@ KV = """
             Inp:
                 id: rk
                 hint_text: 'Mat Siyah, Silk Gold...'
+            Lbl:
+                text: 'Model / Seri'
+            Inp:
+                id: md
+                hint_text: 'PLA+ HF, Silk Magic, Rapid...'
             Lbl:
                 text: 'Çap / Ağırlık'
             Inp:
@@ -200,6 +216,16 @@ KV = """
                 Btn:
                     text: 'Galeri'
                     on_release: root.pick('o')
+            BoxLayout:
+                size_hint_y: None
+                height: dp(46)
+                spacing: dp(6)
+                Btn:
+                    text: 'Tarayıcıda ara'
+                    on_release: root.open_browser()
+                Btn:
+                    text: 'Panodan adres al'
+                    on_release: root.from_clipboard()
             Lbl:
                 text: 'Notlar'
             Inp:
@@ -253,25 +279,62 @@ def shrink(src, dst, m=900):
     im.save(dst, "JPEG", quality=82)
 
 
-def search_images(qy, n=8):
-    """Bing görsel sonuçlarından adres çeker (iki farklı uç nokta dener)."""
-    enc = urllib.parse.quote(qy)
-    urls_try = ["https://www.bing.com/images/async?q=%s&first=1&count=30&mmasync=1&setlang=en" % enc,
-                "https://www.bing.com/images/search?q=%s&setlang=en" % enc]
-    last = "sonuç yok"
-    for url in urls_try:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.8"})
-            page = urllib.request.urlopen(req, timeout=15, context=CTX).read().decode("utf-8", "ignore")
-        except Exception as ex:
-            last = "%s: %s" % (type(ex).__name__, ex)
+def _get(url, headers=None, timeout=12, limit=400000):
+    h = {"User-Agent": UA, "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8"}
+    h.update(headers or {})
+    with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout, context=CTX) as r:
+        return r.read(limit).decode("utf-8", "ignore")
+
+
+def ddg_images(qy):
+    """DuckDuckGo görsel araması."""
+    page = _get("https://duckduckgo.com/?" + urllib.parse.urlencode({"q": qy, "ia": "images", "iax": "images"}))
+    m = re.search(r"vqd=[\"']?([\d-]+)", page)
+    if not m:
+        raise RuntimeError("DuckDuckGo anahtarı alınamadı")
+    url = "https://duckduckgo.com/i.js?" + urllib.parse.urlencode(
+        {"l": "tr-tr", "o": "json", "q": qy, "vqd": m.group(1), "f": ",,,,,", "p": "1"})
+    data = json.loads(_get(url, {"Referer": "https://duckduckgo.com/", "Accept": "application/json"}))
+    return [x["image"] for x in data.get("results", []) if x.get("image")]
+
+
+def ddg_pages(qy):
+    """DuckDuckGo web sonuçlarındaki (mağaza/marka) sayfaların og:image görselleri."""
+    page = _get("https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": qy}))
+    out, seen = [], set()
+    for u in (urllib.parse.unquote(x) for x in re.findall(r"uddg=([^&\"']+)", page)):
+        host = urllib.parse.urlparse(u).netloc
+        if not u.startswith("http") or host in seen or any(b in host for b in (
+                "facebook", "instagram", "youtube", "pinterest", "twitter", "x.com")):
             continue
-        found = re.findall(r"murl&quot;:&quot;(.*?)&quot;", page) + re.findall(r'"murl":"(.*?)"', page)
-        found = [H.unescape(u).replace("\\/", "/") for u in found if u.startswith("http")]
-        if found:
-            return list(dict.fromkeys(found))[:n]
-        last = "Bing sayfası görsel içermedi (%d bayt)" % len(page)
-    raise RuntimeError(last)
+        seen.add(host)
+        try:
+            html = _get(u, timeout=8, limit=250000)
+        except Exception:
+            continue
+        for pat in (r"<meta[^>]+(?:property|name)=[\"']og:image[\"'][^>]*content=[\"']([^\"']+)",
+                    r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]*(?:property|name)=[\"']og:image[\"']"):
+            m = re.search(pat, html, re.I)
+            if m:
+                out.append(urllib.parse.urljoin(u, H.unescape(m.group(1))))
+                break
+        if len(out) >= 6 or len(seen) >= 10:
+            break
+    return out
+
+
+def search_images(qy, n=8):
+    errs, res = [], []
+    for name, f in (("DDG görsel", ddg_images), ("DDG sayfa", ddg_pages)):
+        try:
+            res += [u for u in f(qy) if u not in res]
+        except Exception as ex:
+            errs.append("%s: %s: %s" % (name, type(ex).__name__, ex))
+        if len(res) >= n:
+            break
+    if not res:
+        raise RuntimeError("; ".join(errs) or "sonuç yok")
+    return res[:n]
 
 
 def download(url, dst):
@@ -297,6 +360,47 @@ def share_text(t):
         msg("Panoya kopyalandı")
 
 
+def make_backup_zip(dst):
+    rows = [dict(r) for r in sql("SELECT * FROM f ORDER BY id")]
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+        for r in rows:
+            r.pop("id", None)
+            for k in ("etiket", "ornek"):
+                p = r.get(k) or ""
+                if p and os.path.exists(p):
+                    z.write(p, "img/" + os.path.basename(p))
+                    r[k] = "img/" + os.path.basename(p)
+                else:
+                    r[k] = ""
+        z.writestr("data.json", json.dumps(rows, ensure_ascii=False))
+    return len(rows)
+
+
+def restore_backup(path):
+    """Yedeği mevcut kayıtlara ekler; aynı kayıt varsa atlar."""
+    n = 0
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        for r in json.loads(z.read("data.json").decode("utf-8")):
+            for k in ("etiket", "ornek"):
+                rel = r.get(k) or ""
+                if rel.startswith("img/") and rel in names:
+                    dst = os.path.join(IMG, os.path.basename(rel))
+                    if not os.path.exists(dst):
+                        with open(dst, "wb") as f:
+                            f.write(z.read(rel))
+                    r[k] = dst
+                else:
+                    r[k] = ""
+            if sql("SELECT id FROM f WHERE marka=? AND tur=? AND renk=? AND ifnull(notlar,'')=?",
+                   (r.get("marka"), r.get("tur"), r.get("renk"), r.get("notlar") or "")):
+                continue
+            cols = [c for c in COLS if c in r]
+            sql("INSERT INTO f (%s) VALUES (%s)" % (",".join(cols), ",".join("?" * len(cols))), [r[c] for c in cols])
+            n += 1
+    return n
+
+
 class Row(ButtonBehavior, BoxLayout):
     img = StringProperty("")
     title = StringProperty("")
@@ -315,10 +419,10 @@ class ListScreen(Screen):
         rows = sql("SELECT * FROM f ORDER BY id DESC")
         self.ids.cnt.text = "Filament Envanteri (%d)" % len(rows)
         for r in rows:
-            if s and s not in " ".join(str(r[k] or "") for k in ("marka", "tur", "renk", "notlar")).lower():
+            if s and s not in " ".join(str(r[k] or "") for k in ("marka", "model", "tur", "renk", "notlar")).lower():
                 continue
             w = Row(img=r["etiket"] or r["ornek"] or "", title="%s - %s" % (r["marka"], r["renk"]),
-                    sub="%s  %s\nNozul %s / Tabla %s C" % (r["tur"], r["boyut"] or "", r["nozul"] or "-", r["tabla"] or "-"),
+                    sub="%s %s  %s\nNozul %s / Tabla %s C" % (r["tur"], r["model"] or "", r["boyut"] or "", r["nozul"] or "-", r["tabla"] or "-"),
                     rid=r["id"])
             w.bind(on_release=lambda x: self.edit(x.rid))
             box.add_widget(w)
@@ -330,18 +434,59 @@ class ListScreen(Screen):
 
     def share(self):
         rows = sql("SELECT * FROM f ORDER BY marka, renk")
-        L = ["Marka;Tür;Renk;Çap/Ağırlık;Nozul C;Tabla C;Notlar"]
+        L = ["Marka;Model;Tür;Renk;Çap/Ağırlık;Nozul C;Tabla C;Notlar"]
         for r in rows:
             L.append(";".join(str(r[k] or "").replace(";", ",").replace("\n", " ") for k in
-                              ("marka", "tur", "renk", "boyut", "nozul", "tabla", "notlar")))
+                              ("marka", "model", "tur", "renk", "boyut", "nozul", "tabla", "notlar")))
         try:
             share_text("\n".join(L))
         except Exception as ex:
             msg("Paylaşım hatası: %s" % ex)
 
 
+    def backup(self):
+        tmp = os.path.join(App.get_running_app().user_data_dir, "yedek_tmp.zip")
+        name = time.strftime("filament-yedek-%Y%m%d-%H%M.zip")
+        try:
+            n = make_backup_zip(tmp)
+            if platform != "android":
+                return msg("Yedek (%d kayıt): %s" % (n, tmp), 6)
+            res = native.save_download(tmp, name, "application/zip")
+            msg("%d kayıt yedeklendi:\n%s" % (n, res["label"]), 5)
+            if res["uri"] is not None:
+                native.share_uri(res["uri"], "application/zip")
+        except Exception as ex:
+            msg("Yedekleme hatası: %s: %s" % (type(ex).__name__, ex), 8)
+
+    def restore_pick(self):
+        if platform != "android":
+            return msg("Bu özellik sadece telefonda çalışır.")
+        try:
+            native.pick_file(App.get_running_app().user_data_dir, dict(file=self._restore, error=self._err))
+        except Exception as ex:
+            msg("Dosya seçici açılamadı: %s" % ex, 8)
+
+    @mainthread
+    def _restore(self, path):
+        try:
+            n = restore_backup(path)
+            msg("%d kayıt geri yüklendi." % n, 5)
+            self.refresh()
+        except Exception as ex:
+            msg("Yedek okunamadı: %s: %s" % (type(ex).__name__, ex), 8)
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+    @mainthread
+    def _err(self, t):
+        msg(t, 8)
+
+
 class EditScreen(Screen):
-    F = [("marka", "mk"), ("renk", "rk"), ("boyut", "by"), ("nozul", "nz"), ("tabla", "tb"), ("notlar", "nt")]
+    F = [("marka", "mk"), ("renk", "rk"), ("model", "md"), ("boyut", "by"), ("nozul", "nz"), ("tabla", "tb"), ("notlar", "nt")]
     rid = None
     e = o = ""
     cands = []
@@ -370,11 +515,11 @@ class EditScreen(Screen):
         i = self.ids
         if not i.mk.text.strip() or not i.rk.text.strip():
             return msg("En az Marka ve Renk gerekli.")
-        v = [i.mk.text.strip(), i.tr.text, i.rk.text.strip(), i.by.text, i.nz.text, i.tb.text, self.e, self.o, i.nt.text, i.ocr.text]
+        v = [i.mk.text.strip(), i.tr.text, i.rk.text.strip(), i.by.text, i.nz.text, i.tb.text, self.e, self.o, i.nt.text, i.ocr.text, i.md.text]
         if self.rid:
-            sql("UPDATE f SET marka=?,tur=?,renk=?,boyut=?,nozul=?,tabla=?,etiket=?,ornek=?,notlar=?,ocr=? WHERE id=?", v + [self.rid])
+            sql("UPDATE f SET marka=?,tur=?,renk=?,boyut=?,nozul=?,tabla=?,etiket=?,ornek=?,notlar=?,ocr=?,model=? WHERE id=?", v + [self.rid])
         else:
-            sql("INSERT INTO f (marka,tur,renk,boyut,nozul,tabla,etiket,ornek,notlar,ocr) VALUES (?,?,?,?,?,?,?,?,?,?)", v)
+            sql("INSERT INTO f (marka,tur,renk,boyut,nozul,tabla,etiket,ornek,notlar,ocr,model) VALUES (?,?,?,?,?,?,?,?,?,?,?)", v)
         self.manager.current = "list"
 
     def delete(self):
@@ -412,7 +557,7 @@ class EditScreen(Screen):
         d = native.parse_label(txt)
         i = self.ids
         got = []
-        for k, w in (("marka", "mk"), ("renk", "rk"), ("nozul", "nz"), ("tabla", "tb")):
+        for k, w in (("marka", "mk"), ("model", "md"), ("renk", "rk"), ("nozul", "nz"), ("tabla", "tb")):
             if d.get(k) and not i[w].text.strip():
                 i[w].text = d[k]
                 got.append(d[k])
@@ -438,18 +583,51 @@ class EditScreen(Screen):
     # --- internetten örnek görsel ---
     def find_sample(self):
         i = self.ids
-        if not i.mk.text.strip():
-            return msg("Önce marka yaz.")
-        msg("Aranıyor...")
-        qy = ("%s %s %s filament" % (i.mk.text, i.tr.text, i.rk.text)).strip()
-        threading.Thread(target=self._search, args=(qy,), daemon=True).start()
+        ocr = " ".join(i.ocr.text.split()[:5])
+        b, m, t, c = (x.strip() for x in (i.mk.text, i.md.text, i.tr.text, i.rk.text))
+        if not b and not ocr:
+            return msg("Önce marka yaz ya da etiket fotoğrafı ekle.")
+        b = b or ocr
+        qs = []
+        for q in ("%s %s %s %s filament" % (b, m, t, c), "%s %s %s filament spool" % (b, m, t),
+                  "%s %s %s filament" % (b, t, c)):
+            q = " ".join(q.split())
+            if q not in qs:
+                qs.append(q)
+        msg("Aranıyor: " + qs[0], 3)
+        threading.Thread(target=self._search, args=(qs,), daemon=True).start()
 
-    def _search(self, qy):
+    def open_browser(self):
+        i = self.ids
+        q = " ".join(("%s %s %s %s filament" % (i.mk.text, i.md.text, i.tr.text, i.rk.text)).split())
         try:
-            c = search_images(qy)
+            native.open_url("https://www.google.com/search?tbm=isch&q=" + urllib.parse.quote(q))
         except Exception as ex:
-            return self._err("Arama hatası: %s" % ex)
-        self._cands(c)
+            msg("Tarayıcı açılamadı: %s" % ex, 6)
+
+    def from_clipboard(self):
+        from kivy.core.clipboard import Clipboard
+        u = (Clipboard.paste() or "").strip()
+        if not u.startswith("http"):
+            return msg("Panoda resim adresi yok. Tarayıcıda resme uzun bas > 'Resim adresini kopyala', sonra dön.", 7)
+        msg("İndiriliyor...", 2)
+        self.cands, self.ci = [u], 0
+        self._fetch()
+
+    def _search(self, qs):
+        res, err = [], ""
+        for q in qs:
+            try:
+                for u in search_images(q):
+                    if u not in res:
+                        res.append(u)
+            except Exception as ex:
+                err = str(ex)
+            if len(res) >= 8:
+                break
+        if not res:
+            return self._err("Arama hatası: %s" % (err or "sonuç yok"))
+        self._cands(res)
 
     @mainthread
     def _cands(self, c):
@@ -496,9 +674,11 @@ class FilamentApp(App):
         os.makedirs(IMG, exist_ok=True)
         DB = os.path.join(d, "filamentler.db")
         sql("""CREATE TABLE IF NOT EXISTS f (id INTEGER PRIMARY KEY AUTOINCREMENT, marka TEXT, tur TEXT,
-               renk TEXT, boyut TEXT, nozul TEXT, tabla TEXT, etiket TEXT, ornek TEXT, notlar TEXT, ocr TEXT)""")
-        if "ocr" not in [r["name"] for r in sql("PRAGMA table_info(f)")]:
-            sql("ALTER TABLE f ADD COLUMN ocr TEXT")
+               renk TEXT, boyut TEXT, nozul TEXT, tabla TEXT, etiket TEXT, ornek TEXT, notlar TEXT, ocr TEXT, model TEXT)""")
+        have = [r["name"] for r in sql("PRAGMA table_info(f)")]
+        for col in ("ocr", "model"):
+            if col not in have:
+                sql("ALTER TABLE f ADD COLUMN %s TEXT" % col)
         Window.clearcolor = (.07, .08, .1, 1)
         Builder.load_string(KV)
         sm = ScreenManager(transition=NoTransition())
@@ -508,6 +688,8 @@ class FilamentApp(App):
         if platform == "android":
             try:
                 native.init()
+                if native.LOAD_ERR:
+                    Clock.schedule_once(lambda *_: msg("ML Kit yüklenemedi: %s" % native.LOAD_ERR, 12), 1)
                 from android.permissions import request_permissions
                 request_permissions(["android.permission.WRITE_EXTERNAL_STORAGE"])
             except Exception as ex:
