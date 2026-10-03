@@ -8,14 +8,20 @@ from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import StringProperty, NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
+from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import ScreenManager, Screen, NoTransition
 from kivy.utils import platform
 import native
 
-COLS = ["marka", "tur", "renk", "boyut", "nozul", "tabla", "etiket", "ornek", "notlar", "ocr", "model"]
+__version__ = "1.3.5"  # buildozer.spec ile aynı olmalı / keep in sync with buildozer.spec
+COLS = ["marka", "tur", "renk", "boyut", "nozul", "tabla", "etiket", "ornek", "notlar", "ocr"]
 TURLER = ["PLA", "PLA+", "PETG", "ABS", "ASA", "TPU", "PA", "PPA-CF", "Diğer"]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 try:
@@ -138,24 +144,25 @@ KV = """
                 id: mk
                 hint_text: 'Porima, eSUN, Bambu Lab...'
             Lbl:
-                text: 'Tür'
-            Spinner:
-                id: tr
-                text: 'PLA'
+                text: 'Tür / Model'
+            BoxLayout:
                 size_hint_y: None
                 height: dp(44)
-                background_normal: ''
-                background_color: .1,.12,.15,1
+                spacing: dp(6)
+                Inp:
+                    id: tr
+                    hint_text: 'Bambu PLA Basic, eSUN PLA+...'
+                Btn:
+                    text: 'Listeden seç'
+                    size_hint_x: None
+                    width: dp(130)
+                    height: dp(44)
+                    on_release: root.pick_type()
             Lbl:
                 text: 'Renk *'
             Inp:
                 id: rk
                 hint_text: 'Mat Siyah, Silk Gold...'
-            Lbl:
-                text: 'Model / Seri'
-            Inp:
-                id: md
-                hint_text: 'PLA+ HF, Silk Magic, Rapid...'
             Lbl:
                 text: 'Çap / Ağırlık'
             Inp:
@@ -227,6 +234,9 @@ KV = """
                     text: 'Panodan adres al'
                     on_release: root.from_clipboard()
             Lbl:
+                id: st
+                height: max(dp(26), self.texture_size[1])
+            Lbl:
                 text: 'Notlar'
             Inp:
                 id: nt
@@ -273,6 +283,11 @@ def msg(t, secs=4):
 
 
 def shrink(src, dst, m=900):
+    if platform == "android":
+        try:
+            return native.shrink_file(src, dst, m)
+        except Exception:
+            pass
     from PIL import Image, ImageOps
     im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
     im.thumbnail((m, m))
@@ -289,11 +304,11 @@ def _get(url, headers=None, timeout=12, limit=400000):
 def ddg_images(qy):
     """DuckDuckGo görsel araması."""
     page = _get("https://duckduckgo.com/?" + urllib.parse.urlencode({"q": qy, "ia": "images", "iax": "images"}))
-    m = re.search(r"vqd=[\"']?([\d-]+)", page)
+    m = re.search(r"vqd=[\"']?([\d-]+)|\"vqd\":\"([\d-]+)", page)
     if not m:
         raise RuntimeError("DuckDuckGo anahtarı alınamadı")
     url = "https://duckduckgo.com/i.js?" + urllib.parse.urlencode(
-        {"l": "tr-tr", "o": "json", "q": qy, "vqd": m.group(1), "f": ",,,,,", "p": "1"})
+        {"l": "tr-tr", "o": "json", "q": qy, "vqd": m.group(1) or m.group(2), "f": ",,,,,", "p": "1", "ct": "AT"})
     data = json.loads(_get(url, {"Referer": "https://duckduckgo.com/", "Accept": "application/json"}))
     return [x["image"] for x in data.get("results", []) if x.get("image")]
 
@@ -338,7 +353,7 @@ def search_images(qy, n=8):
 
 
 def download(url, dst):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "image/webp,image/jpeg,image/png,image/*;q=0.8"})
     with urllib.request.urlopen(req, timeout=15, context=CTX) as r, open(dst, "wb") as f:
         f.write(r.read(8_000_000))
 
@@ -382,6 +397,8 @@ def restore_backup(path):
     with zipfile.ZipFile(path) as z:
         names = set(z.namelist())
         for r in json.loads(z.read("data.json").decode("utf-8")):
+            if r.get("model"):
+                r["tur"] = ("%s %s" % (r.get("tur") or "", r["model"])).strip()
             for k in ("etiket", "ornek"):
                 rel = r.get(k) or ""
                 if rel.startswith("img/") and rel in names:
@@ -417,12 +434,12 @@ class ListScreen(Screen):
         box = self.ids.box
         box.clear_widgets()
         rows = sql("SELECT * FROM f ORDER BY id DESC")
-        self.ids.cnt.text = "Filament Envanteri (%d)" % len(rows)
+        self.ids.cnt.text = "Filament Envanteri (%d)  v%s" % (len(rows), __version__)
         for r in rows:
-            if s and s not in " ".join(str(r[k] or "") for k in ("marka", "model", "tur", "renk", "notlar")).lower():
+            if s and s not in " ".join(str(r[k] or "") for k in ("marka", "tur", "renk", "notlar")).lower():
                 continue
-            w = Row(img=r["etiket"] or r["ornek"] or "", title="%s - %s" % (r["marka"], r["renk"]),
-                    sub="%s %s  %s\nNozul %s / Tabla %s C" % (r["tur"], r["model"] or "", r["boyut"] or "", r["nozul"] or "-", r["tabla"] or "-"),
+            w = Row(img=r["ornek"] or r["etiket"] or "", title="%s - %s" % (r["marka"], r["renk"]),
+                    sub="%s  %s\nNozul %s / Tabla %s C" % (r["tur"] or "", r["boyut"] or "", r["nozul"] or "-", r["tabla"] or "-"),
                     rid=r["id"])
             w.bind(on_release=lambda x: self.edit(x.rid))
             box.add_widget(w)
@@ -434,10 +451,10 @@ class ListScreen(Screen):
 
     def share(self):
         rows = sql("SELECT * FROM f ORDER BY marka, renk")
-        L = ["Marka;Model;Tür;Renk;Çap/Ağırlık;Nozul C;Tabla C;Notlar"]
+        L = ["Marka;Tür / Model;Renk;Çap/Ağırlık;Nozul C;Tabla C;Notlar"]
         for r in rows:
             L.append(";".join(str(r[k] or "").replace(";", ",").replace("\n", " ") for k in
-                              ("marka", "model", "tur", "renk", "boyut", "nozul", "tabla", "notlar")))
+                              ("marka", "tur", "renk", "boyut", "nozul", "tabla", "notlar")))
         try:
             share_text("\n".join(L))
         except Exception as ex:
@@ -486,7 +503,7 @@ class ListScreen(Screen):
 
 
 class EditScreen(Screen):
-    F = [("marka", "mk"), ("renk", "rk"), ("model", "md"), ("boyut", "by"), ("nozul", "nz"), ("tabla", "tb"), ("notlar", "nt")]
+    F = [("marka", "mk"), ("renk", "rk"), ("boyut", "by"), ("nozul", "nz"), ("tabla", "tb"), ("notlar", "nt")]
     rid = None
     e = o = ""
     cands = []
@@ -496,8 +513,7 @@ class EditScreen(Screen):
         i = self.ids
         self.rid = rid
         r = sql("SELECT * FROM f WHERE id=?", (rid,))[0] if rid else None
-        i.tr.values = TURLER
-        i.tr.text = r["tur"] if r else "PLA"
+        i.tr.text = (r["tur"] or "") if r else ""
         for k, w in self.F:
             i[w].text = (r[k] or "") if r else ("1.75mm / 1kg" if k == "boyut" else "")
         self.e = r["etiket"] or "" if r else ""
@@ -515,11 +531,11 @@ class EditScreen(Screen):
         i = self.ids
         if not i.mk.text.strip() or not i.rk.text.strip():
             return msg("En az Marka ve Renk gerekli.")
-        v = [i.mk.text.strip(), i.tr.text, i.rk.text.strip(), i.by.text, i.nz.text, i.tb.text, self.e, self.o, i.nt.text, i.ocr.text, i.md.text]
+        v = [i.mk.text.strip(), i.tr.text, i.rk.text.strip(), i.by.text, i.nz.text, i.tb.text, self.e, self.o, i.nt.text, i.ocr.text]
         if self.rid:
-            sql("UPDATE f SET marka=?,tur=?,renk=?,boyut=?,nozul=?,tabla=?,etiket=?,ornek=?,notlar=?,ocr=?,model=? WHERE id=?", v + [self.rid])
+            sql("UPDATE f SET marka=?,tur=?,renk=?,boyut=?,nozul=?,tabla=?,etiket=?,ornek=?,notlar=?,ocr=? WHERE id=?", v + [self.rid])
         else:
-            sql("INSERT INTO f (marka,tur,renk,boyut,nozul,tabla,etiket,ornek,notlar,ocr,model) VALUES (?,?,?,?,?,?,?,?,?,?,?)", v)
+            sql("INSERT INTO f (marka,tur,renk,boyut,nozul,tabla,etiket,ornek,notlar,ocr) VALUES (?,?,?,?,?,?,?,?,?,?)", v)
         self.manager.current = "list"
 
     def delete(self):
@@ -557,14 +573,14 @@ class EditScreen(Screen):
         d = native.parse_label(txt)
         i = self.ids
         got = []
-        for k, w in (("marka", "mk"), ("model", "md"), ("renk", "rk"), ("nozul", "nz"), ("tabla", "tb")):
+        for k, w in (("marka", "mk"), ("renk", "rk"), ("nozul", "nz"), ("tabla", "tb")):
             if d.get(k) and not i[w].text.strip():
                 i[w].text = d[k]
                 got.append(d[k])
         if d.get("boyut") and i.by.text.strip() in ("", "1.75mm / 1kg"):
             i.by.text = d["boyut"]
             got.append(d["boyut"])
-        if d.get("tur"):
+        if d.get("tur") and not i.tr.text.strip():
             i.tr.text = d["tur"]
             got.append(d["tur"])
         msg("Okunan: " + ", ".join(got) if got else
@@ -580,26 +596,152 @@ class EditScreen(Screen):
         except Exception as ex:
             msg("OCR hatası: %s: %s" % (type(ex).__name__, ex), 8)
 
+    # --- Tür / Model listesi (Bambu Studio) ---
+    def pick_type(self):
+        box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(6))
+        q = TextInput(hint_text="Ara: pla, petg, bambu, sunlu...", multiline=False, size_hint_y=None, height=dp(44),
+                      background_color=(.1, .12, .15, 1), foreground_color=(.93, .95, .97, 1),
+                      hint_text_color=(.45, .5, .56, 1), cursor_color=(1, .48, .24, 1))
+        grid = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
+        grid.bind(minimum_height=grid.setter("height"))
+        sv = ScrollView()
+        sv.add_widget(grid)
+        pop = Popup(title="Tür / Model (Bambu Studio listesi)", content=box, size_hint=(.95, .9))
+
+        def choose(name):
+            self.ids.tr.text = name
+            pop.dismiss()
+
+        def fill(*_):
+            grid.clear_widgets()
+            words = native.fold(q.text).split()
+            n = 0
+            for name in native.NAMES:
+                f = native.fold(name)
+                if all(w in f for w in words):
+                    b = Button(text=name, size_hint_y=None, height=dp(44), background_normal="",
+                               background_color=(.17, .2, .25, 1))
+                    b.bind(on_release=lambda x, nm=name: choose(nm))
+                    grid.add_widget(b)
+                    n += 1
+                    if n >= 80:
+                        break
+
+        q.bind(text=fill)
+        fill()
+        box.add_widget(q)
+        box.add_widget(sv)
+        pop.open()
+
     # --- internetten örnek görsel ---
-    def find_sample(self):
+    qs, errs, plan = [], [], []
+
+    @mainthread
+    def status(self, t):
+        self.ids.st.text = t
+
+    def _queries(self):
         i = self.ids
         ocr = " ".join(i.ocr.text.split()[:5])
-        b, m, t, c = (x.strip() for x in (i.mk.text, i.md.text, i.tr.text, i.rk.text))
-        if not b and not ocr:
-            return msg("Önce marka yaz ya da etiket fotoğrafı ekle.")
+        b, t, c = (x.strip() for x in (i.mk.text, i.tr.text, i.rk.text))
+        if not (b or t or ocr):
+            return []
         b = b or ocr
-        qs = []
-        for q in ("%s %s %s %s filament" % (b, m, t, c), "%s %s %s filament spool" % (b, m, t),
-                  "%s %s %s filament" % (b, t, c)):
+        out = []
+        for q in ("%s %s %s filament" % (b, t, c), "%s %s filament spool" % (b, t), "%s %s filament" % (b, c)):
             q = " ".join(q.split())
-            if q not in qs:
-                qs.append(q)
-        msg("Aranıyor: " + qs[0], 3)
-        threading.Thread(target=self._search, args=(qs,), daemon=True).start()
+            if q not in out:
+                out.append(q)
+        return out
+
+    def find_sample(self):
+        self.qs = self._queries()
+        if not self.qs:
+            return msg("Önce marka/tür yaz ya da etiket fotoğrafı ekle.")
+        self.errs = []
+        self.plan = [("ddg", 0), ("google", 0), ("ddg", 1)] if platform == "android" else []
+        self._step(0)
+
+    def _step(self, n):
+        if n >= len(self.plan):
+            self.status("Tarayıcı motoru sonuç vermedi, hızlı yöntemler deneniyor...")
+            return threading.Thread(target=self._fallback, daemon=True).start()
+        kind, qi = self.plan[n]
+        q = self.qs[min(qi, len(self.qs) - 1)]
+        self.status("%d/%d  %s aranıyor: %s" % (n + 1, len(self.plan), "DuckDuckGo" if kind == "ddg" else "Google", q))
+        try:
+            native.web_images(q, kind, lambda urls: self._got_urls(urls, n), lambda e: self._fail(n, e))
+        except Exception as ex:
+            self._fail(n, "%s: %s" % (type(ex).__name__, ex))
+
+    def _fail(self, n, e):
+        self.errs.append("%s: %s" % (self.plan[n][0], e))
+        Clock.schedule_once(lambda dt: self._step(n + 1), 0)
+
+    def _got_urls(self, urls, n):
+        self.cands, self.ci = urls, 0
+        self.status("%d görsel adresi bulundu, indiriliyor..." % len(urls))
+        threading.Thread(target=self._dl_loop, args=(n,), daemon=True).start()
+
+    def _fallback(self):
+        res = []
+        for name, f in (("DDG görsel", ddg_images), ("DDG sayfa", ddg_pages)):
+            for q in self.qs[:2]:
+                try:
+                    res += [u for u in f(q) if u not in res]
+                except Exception as ex:
+                    self.errs.append("%s: %s: %s" % (name, type(ex).__name__, ex))
+                if res:
+                    break
+            if res:
+                break
+        if not res:
+            return self.status("Bulunamadı. " + " | ".join(self.errs)[:400])
+        self.cands, self.ci = res, 0
+        self._dl_loop(None)
+
+    def _dl_loop(self, n):
+        """Adayları sırayla dener; indirilemeyeni/çözülemeyeni atlar."""
+        last = ""
+        for k in range(len(self.cands)):
+            idx = (self.ci + k) % len(self.cands)
+            tmp = os.path.join(IMG, "tmp_" + uuid.uuid4().hex)
+            dst = os.path.join(IMG, "o" + uuid.uuid4().hex + ".jpg")
+            try:
+                download(self.cands[idx], tmp)
+                shrink(tmp, dst)
+            except Exception as ex:
+                last = "%s: %s" % (type(ex).__name__, ex)
+                continue
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+            self.ci = idx
+            return self._set(dst, "Görsel %d/%d. Beğenmediysen 'Sonraki'." % (idx + 1, len(self.cands)))
+        self.errs.append("indirme: " + last)
+        if n is None:
+            self.status("Görseller indirilemedi. " + " | ".join(self.errs)[:400])
+        else:
+            Clock.schedule_once(lambda dt: self._step(n + 1), 0)
+
+    @mainthread
+    def _set(self, dst, note=""):
+        self.o = dst
+        self.show()
+        if note:
+            self.ids.st.text = note
+
+    def next_sample(self):
+        if not self.cands:
+            return msg("Önce 'İnternetten bul'a bas.")
+        self.ci = (self.ci + 1) % len(self.cands)
+        self.status("Sonraki görsel indiriliyor...")
+        threading.Thread(target=self._dl_loop, args=(None,), daemon=True).start()
 
     def open_browser(self):
-        i = self.ids
-        q = " ".join(("%s %s %s %s filament" % (i.mk.text, i.md.text, i.tr.text, i.rk.text)).split())
+        q = (self._queries() or [""])[0]
         try:
             native.open_url("https://www.google.com/search?tbm=isch&q=" + urllib.parse.quote(q))
         except Exception as ex:
@@ -610,60 +752,9 @@ class EditScreen(Screen):
         u = (Clipboard.paste() or "").strip()
         if not u.startswith("http"):
             return msg("Panoda resim adresi yok. Tarayıcıda resme uzun bas > 'Resim adresini kopyala', sonra dön.", 7)
-        msg("İndiriliyor...", 2)
         self.cands, self.ci = [u], 0
-        self._fetch()
-
-    def _search(self, qs):
-        res, err = [], ""
-        for q in qs:
-            try:
-                for u in search_images(q):
-                    if u not in res:
-                        res.append(u)
-            except Exception as ex:
-                err = str(ex)
-            if len(res) >= 8:
-                break
-        if not res:
-            return self._err("Arama hatası: %s" % (err or "sonuç yok"))
-        self._cands(res)
-
-    @mainthread
-    def _cands(self, c):
-        self.cands, self.ci = c, 0
-        if not c:
-            return msg("Sonuç bulunamadı.")
-        self._fetch()
-
-    def next_sample(self):
-        if not self.cands:
-            return msg("Önce 'İnternetten bul'a bas.")
-        self.ci = (self.ci + 1) % len(self.cands)
-        self._fetch()
-
-    def _fetch(self):
-        threading.Thread(target=self._dl, args=(self.cands[self.ci],), daemon=True).start()
-
-    def _dl(self, url):
-        tmp = os.path.join(IMG, "tmp_" + uuid.uuid4().hex)
-        dst = os.path.join(IMG, "o" + uuid.uuid4().hex + ".jpg")
-        try:
-            download(url, tmp)
-            shrink(tmp, dst)
-            os.remove(tmp)
-        except Exception:
-            return self._err("Bu görsel indirilemedi, 'Sonraki'ne bas.")
-        self._set(dst)
-
-    @mainthread
-    def _set(self, dst):
-        self.o = dst
-        self.show()
-
-    @mainthread
-    def _err(self, t):
-        msg(t, 8)
+        self.status("Adres indiriliyor...")
+        threading.Thread(target=self._dl_loop, args=(None,), daemon=True).start()
 
 
 class FilamentApp(App):
@@ -679,6 +770,7 @@ class FilamentApp(App):
         for col in ("ocr", "model"):
             if col not in have:
                 sql("ALTER TABLE f ADD COLUMN %s TEXT" % col)
+        sql("UPDATE f SET tur=trim(ifnull(tur,'')||' '||model), model=NULL WHERE ifnull(model,'')<>''")
         Window.clearcolor = (.07, .08, .1, 1)
         Builder.load_string(KV)
         sm = ScreenManager(transition=NoTransition())

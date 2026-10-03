@@ -3,7 +3,7 @@
 ## Türkçe
 Evdeki filamentlerin etiket fotoğraflarını çekip, marka/türe göre internetten örnek görsel bulan ve not tutan Android uygulaması. Veriler telefonda gerçek bir **SQLite** veritabanında (`filamentler.db`) saklanır. Koyu tema varsayılandır.
 
-**Özellikler:** etiket fotoğrafı (kamera/galeri) · **etiketten otomatik okuma (ML Kit OCR: marka, tür, renk, çap, sıcaklıklar)** · otomatik örnek görsel arama (DuckDuckGo + ürün sayfası görselleri) · sıcaklık ve not alanları · arama · model/seri alanı ve marka+model ile daha isabetli görsel arama · listeyi CSV olarak gönderme · **tam yedek (kayıtlar + fotoğraflar, zip)**: İndirilenler klasörüne kaydeder ve paylaşım menüsünü açar; **Yedekten yükle** ile geri alır (aynı kayıtları atlar).
+**Özellikler:** etiket fotoğrafı (kamera/galeri) · **etiketten otomatik okuma (ML Kit OCR: marka, tür, renk, çap, sıcaklıklar)** · otomatik örnek görsel arama (telefonun gerçek tarayıcı motoruyla DuckDuckGo/Google) · sıcaklık ve not alanları · arama · tek **Tür / Model** alanı (Bambu Studio'nun filament adlarından seçilir, `filaments.txt`) ve marka+model ile daha isabetli görsel arama · listeyi CSV olarak gönderme · **tam yedek (kayıtlar + fotoğraflar, zip)**: İndirilenler klasörüne kaydeder ve paylaşım menüsünü açar; **Yedekten yükle** ile geri alır (aynı kayıtları atlar).
 
 ### APK nasıl alınır (telefonda derleme gerekmez)
 1. GitHub'da `BuRsTFiRe47/filament-envanteri` adlı bir repo aç ve bu dosyaların hepsini yükle:
@@ -25,7 +25,7 @@ Git kullanmak istemezsen: repo sayfasında **Add file → Upload files**, zip'te
 `buildozer.spec` içindeki `version` değerini güncelle, sonra: / bump `version` in `buildozer.spec`, then:
 ```
 git add -A && git commit -m "v1.2.0"
-git tag v1.2.0
+git tag v1.3.5
 git push origin main --tags
 ```
 `v*` etiketi push'lanınca APK, GitHub **Releases** sayfasına otomatik eklenir. / Pushing a `v*` tag attaches the APK to the GitHub **Releases** page automatically.
@@ -38,7 +38,7 @@ git push origin main --tags
 ## English
 An Android app to photograph your filament spool labels, auto-fetch sample images by brand/type, and keep notes. Data lives in a real **SQLite** database on the phone. Dark theme by default.
 
-**Features:** label photo (camera/gallery) · **automatic label reading (on-device ML Kit OCR: brand, type, color, diameter, temps)** · automatic sample-image search (DuckDuckGo + product-page images) · temperature and notes fields · search · model/series field and brand+model image search · share the list as CSV · **full backup (records + photos, zip)** saved to Downloads with a share sheet; **Yedekten yükle** restores it (skips duplicates).
+**Features:** label photo (camera/gallery) · **automatic label reading (on-device ML Kit OCR: brand, type, color, diameter, temps)** · automatic sample-image search (phone's real browser engine, DuckDuckGo/Google) · temperature and notes fields · search · a single **Type / Model** field (pick from Bambu Studio filament names, `filaments.txt`) and brand+model image search · share the list as CSV · **full backup (records + photos, zip)** saved to Downloads with a share sheet; **Yedekten yükle** restores it (skips duplicates).
 
 ### Getting the APK (no on-device build needed)
 1. Create `BuRsTFiRe47/filament-envanteri` on GitHub and push all these files:

@@ -11,13 +11,25 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - name: Sürüm denetimi / Version check
+        run: |
+          V=$(grep -E '^version *=' buildozer.spec | sed 's/.*= *//' | tr -d '\r ')
+          echo "APPVER=$V" >> "$GITHUB_ENV"
+          echo "buildozer.spec sürümü: $V | commit: $GITHUB_SHA | ref: $GITHUB_REF"
+          grep -n "__version__ =" main.py
+          ls
+          if [[ "$GITHUB_REF" == refs/tags/v* && "v$V" != "$GITHUB_REF_NAME" ]]; then
+            echo "::error::Etiket $GITHUB_REF_NAME ama buildozer.spec sürümü $V. Dosyalar push edilmemiş olabilir."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -33,13 +45,6 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install buildozer "cython<3.1"
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer
-            .buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
-
       # Her derlemede aynı imza kullanılsın ki APK eskisinin üstüne güncellenebilsin
       # Use the same signing key every build so the APK can update over the old one
       - name: Sabit imza / Fixed signing key
@@ -50,9 +55,9 @@ jobs:
       - name: APK derle / Build APK
         run: buildozer -v android debug
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
-          name: filament-envanteri-apk
+          name: filament-envanteri-${{ env.APPVER }}
           path: bin/*.apk
 
       - name: GitHub Release (v* etiketi / v* tag)
