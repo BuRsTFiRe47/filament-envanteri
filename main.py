@@ -20,7 +20,7 @@ from kivy.uix.screenmanager import ScreenManager, Screen, NoTransition
 from kivy.utils import platform
 import native
 
-__version__ = "1.3.5"  # buildozer.spec ile aynı olmalı / keep in sync with buildozer.spec
+__version__ = "1.3.6"  # buildozer.spec ile aynı olmalı / keep in sync with buildozer.spec
 COLS = ["marka", "tur", "renk", "boyut", "nozul", "tabla", "etiket", "ornek", "notlar", "ocr"]
 TURLER = ["PLA", "PLA+", "PETG", "ABS", "ASA", "TPU", "PA", "PPA-CF", "Diğer"]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -727,6 +727,10 @@ class EditScreen(Screen):
             Clock.schedule_once(lambda dt: self._step(n + 1), 0)
 
     @mainthread
+    def _err(self, t):
+        msg(t, 8)
+
+    @mainthread
     def _set(self, dst, note=""):
         self.o = dst
         self.show()
@@ -785,7 +789,7 @@ class FilamentApp(App):
                 from android.permissions import request_permissions
                 request_permissions(["android.permission.WRITE_EXTERNAL_STORAGE"])
             except Exception as ex:
-                Clock.schedule_once(lambda *_: msg("Başlatma hatası: %s" % ex, 8), 1)
+                Clock.schedule_once(lambda *_, e=ex: msg("Başlatma hatası: %s" % e, 8), 1)
         return sm
 
     def key(self, w, k, *a):

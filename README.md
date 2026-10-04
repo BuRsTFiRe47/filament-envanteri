@@ -25,7 +25,7 @@ Git kullanmak istemezsen: repo sayfasında **Add file → Upload files**, zip'te
 `buildozer.spec` içindeki `version` değerini güncelle, sonra: / bump `version` in `buildozer.spec`, then:
 ```
 git add -A && git commit -m "v1.2.0"
-git tag v1.3.5
+git tag v1.3.6
 git push origin main --tags
 ```
 `v*` etiketi push'lanınca APK, GitHub **Releases** sayfasına otomatik eklenir. / Pushing a `v*` tag attaches the APK to the GitHub **Releases** page automatically.
